@@ -1,2 +1,4 @@
 *.pyc
 */.idea/
+*.pyc_dis
+*.syx

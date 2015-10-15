@@ -21,9 +21,9 @@ from _Framework.ControlElement import \
 from _Framework.ControlSurface import ControlSurface  # Central base class for scripts based on the new Framework
 from _Framework.ControlSurfaceComponent import \
     ControlSurfaceComponent  # Base class for all classes encapsulating functions in Live
-# from _Framework.DeviceComponent import DeviceComponent # Class representing a device in Live
+from _Framework.DeviceComponent import DeviceComponent # Class representing a device in Live
 # from _Framework.DisplayDataSource import DisplayDataSource # Data object that is fed with a specific string and notifies its observers
-# from _Framework.EncoderElement import EncoderElement # Class representing a continuous control on the controller
+from _Framework.EncoderElement import EncoderElement # Class representing a continuous control on the controller
 from _Framework.InputControlElement import *  # Base class for all classes representing control elements on a controller
 # from _Framework.LogicalDisplaySegment import LogicalDisplaySegment # Class representing a specific segment of a display on the controller
 from _Framework.MixerComponent import MixerComponent  # Class encompassing several channel strips to form a mixer
@@ -46,22 +46,33 @@ class nanoKONTROL(ControlSurface):
     __doc__ = " Initial script for Korg nanoKONTROL controller script "
     __module__ = __name__
 
+    """------------------------------------------------------------------------------------------"""
     def __init__(self, c_instance):
         ControlSurface.__init__(self, c_instance)
         with self.component_guard():
             # Turn off rebuild MIDI map until after we're done setting up
             self._set_suppress_rebuild_requests(True)
 
+
+            """ Call our setup functions """
             # Setup the transport part
             self._setup_transport_control()
 
             # Setup the mixer part
             self._setup_mixer_control()
 
-            # Setup the mixer part
+            # Setup the session part
             self._setup_session_control()
+
+            # Track navigation
+            #self._setup_track_navigation_control()
+
             #link the session model to the Live object-> shows your ring
             self.set_highlighting_session_component(session)
+
+            # Device component control (effect rack)
+            self._setup_device_control()
+
 
             """ Here is some Live API stuff just for fun """
             app = Live.Application.get_application()  # get a handle to the App
@@ -71,10 +82,47 @@ class nanoKONTROL(ControlSurface):
             self.show_message("Loading nanoKONTROL for Live " + str(maj) + "." + str(min) + "." + str(
                 bug))  # put them together and use the ControlSurface show_message method to output version info to console on the status bar of Live
 
+            """ Listener for midi input """
+            self.encoder_test_input=EncoderElement(MIDI_CC_TYPE, midi_channel, 94, Live.MidiMap.MapMode.relative_smooth_two_compliment) # identifies P&d1 as a ButtonElement. IS_MOMENTARY is true if the button send a message on being released
+            self.encoder_test_input.add_value_listener(self._encoder_test_input, identify_sender= False) #adda value listener that will lauch the method self.helloworld when Pad1 is pressed
+
             # Turn rebuild back on, now that we're done setting up
             self._set_suppress_rebuild_requests(False)
 
+
+
+    """ Device control allow to control the audio effect rack for the selected track """
+    """------------------------------------------------------------------------------------------"""
+    def _setup_device_control(self):
+        is_momentary = True
+
+        global device   # We want to instantiate the global mixer as a MixerComponent object (it was a global "None" type up until now...)
+        device = DeviceComponent()
+        device.name = 'Audio Effect Rack'
+
+        # Button on/off
+        button_on_off = ButtonElement(is_momentary, MIDI_CC_TYPE, midi_channel, midi_device_on_off)
+        device.set_on_off_button(button_on_off)
+
+        # Audio Effect Rack - 8 modulation controls
+        device_parameter_controls = []
+        for index in range(8):
+            device_parameter_controls.append(EncoderElement(MIDI_CC_TYPE, midi_channel, midi_device_controls[index], Live.MidiMap.MapMode.absolute))
+        device.set_parameter_controls(device_parameter_controls)
+
+        self.set_device_component(device)
+        self._device_selection_follows_track_selection = True   # select automatically the device of the selected track
+
+
+
+    """ Called on configured encoder input """
+    """------------------------------------------------------------------------------------------"""
+    def _encoder_test_input(self, value):
+        self.show_message("Yeah ==> " + str(value) + " ! " + str(mixer.song().view.selected_track))
+
+
     """ Initialisation of transport part """
+    """------------------------------------------------------------------------------------------"""
     def _setup_transport_control(self):
         is_momentary = True
 
@@ -98,6 +146,7 @@ class nanoKONTROL(ControlSurface):
 
 
     """ Initialisation of mixer part """
+    """------------------------------------------------------------------------------------------"""
     def _setup_mixer_control(self):
         is_momentary = True
 
@@ -109,10 +158,7 @@ class nanoKONTROL(ControlSurface):
 
         """ Buttons and Sliders association """
         # Master channel
-        mixer.master_strip().set_volume_control(SliderElement(MIDI_CC_TYPE, midi_channel, midi_mixer_volume_master[0]))  # sets the continuous controller for volume
-        #mixer.master_strip().set_volume_control(SliderElement(MIDI_CC_TYPE, midi_channel, midi_mixer_volume_master[1]))  # sets the continuous controller for volume
-        #mixer.master_strip().set_volume_control(SliderElement(MIDI_CC_TYPE, midi_channel, midi_mixer_volume_master[2]))  # sets the continuous controller for volume
-        #mixer.master_strip().set_volume_control(SliderElement(MIDI_CC_TYPE, midi_channel, midi_mixer_volume_master[3]))  # sets the continuous controller for volume
+        mixer.master_strip().set_volume_control(SliderElement(MIDI_CC_TYPE, midi_channel, midi_mixer_volume_master))  # sets the continuous controller for volume
 
         # Other channels, same size as mixer_num_tracks
         # Set volume control, solo and mute buttons
@@ -121,7 +167,33 @@ class nanoKONTROL(ControlSurface):
             mixer.channel_strip(index).set_solo_button(ButtonElement(is_momentary, MIDI_CC_TYPE, midi_channel, midi_mixer_solo_channels[index]))  # sets the solo button
             mixer.channel_strip(index).set_mute_button(ButtonElement(is_momentary, MIDI_CC_TYPE, midi_channel, midi_mixer_mute_channels[index]))  # sets the mute ("activate") button
 
-    """ Initialisation of mixer part """
+        """ Buttons to select track """
+        button_next_track = ButtonElement(is_momentary, MIDI_CC_TYPE, midi_channel, midi_track_select_next)
+        button_previous_track = ButtonElement(is_momentary, MIDI_CC_TYPE, midi_channel, midi_track_select_previous)
+        mixer.set_select_buttons(button_next_track, button_previous_track)
+
+        """ Listeners """
+        # When selected track if changed
+        self.song().view.add_selected_track_listener(self.on_track_selected)
+
+
+    """ Called when a track is changed """
+    """------------------------------------------------------------------------------------------"""
+    def on_track_selected(self):
+        self.show_message("Track changed!")
+
+        """ Encoder for Sends controls on selected track """
+        '''encoder_test = EncoderElement(MIDI_CC_TYPE, midi_channel, 57, Live.MidiMap.MapMode.absolute)
+        encoder_test2 = EncoderElement(MIDI_CC_TYPE, midi_channel, 58, Live.MidiMap.MapMode.absolute)
+        encoder_send_buttons = []
+        encoder_send_buttons.append(encoder_test)
+        encoder_send_buttons.append(encoder_test2)
+        mixer.selected_strip().set_send_controls(encoder_send_buttons)'''
+
+
+
+    """ Initialisation of session part """
+    """------------------------------------------------------------------------------------------"""
     def _setup_session_control(self):
         is_momentary = True
 
@@ -157,6 +229,7 @@ class nanoKONTROL(ControlSurface):
 
 
 
+    """------------------------------------------------------------------------------------------"""
     def disconnect(self):
         """clean things up on disconnect"""
         self.log_message(time.strftime("%d.%m.%Y %H:%M:%S", time.localtime()) + "--------------= nanoKONTROL log closed =--------------")  # Create entry in log file
